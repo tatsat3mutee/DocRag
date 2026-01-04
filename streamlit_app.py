@@ -4,6 +4,8 @@ import streamlit as st
 from pathlib import Path
 import sys
 import time
+import tempfile
+import io
 
 # Add src to path
 sys.path.append(str(Path(__file__).parent))
@@ -12,6 +14,7 @@ from src.config.config import Config
 from src.document_ingestion.document_processor import DocumentProcessor
 from src.vectorstore.vectorstore import VectorStore
 from src.graph_builder.graph_builder import GraphBuilder
+from langchain_core.documents import Document
 
 # Page configuration
 st.set_page_config(
@@ -40,6 +43,12 @@ def init_session_state():
         st.session_state.initialized = False
     if 'history' not in st.session_state:
         st.session_state.history = []
+    if 'vector_store' not in st.session_state:
+        st.session_state.vector_store = None
+    if 'doc_processor' not in st.session_state:
+        st.session_state.doc_processor = None
+    if 'llm' not in st.session_state:
+        st.session_state.llm = None
 
 @st.cache_resource
 def initialize_rag():
@@ -62,6 +71,11 @@ def initialize_rag():
         # Create vector store
         vector_store.create_vectorstore(documents)
         
+        # Store in session for later updates
+        st.session_state.vector_store = vector_store
+        st.session_state.doc_processor = doc_processor
+        st.session_state.llm = llm
+        
         # Build graph
         graph_builder = GraphBuilder(
             retriever=vector_store.get_retriever(),
@@ -73,6 +87,67 @@ def initialize_rag():
     except Exception as e:
         st.error(f"Failed to initialize: {str(e)}")
         return None, 0
+
+def add_documents_to_store(uploaded_files):
+    """Add uploaded documents to the vector store"""
+    if not uploaded_files:
+        return 0
+    
+    try:
+        doc_processor = st.session_state.doc_processor
+        vector_store = st.session_state.vector_store
+        
+        all_documents = []
+        
+        for uploaded_file in uploaded_files:
+            # Handle PDF files
+            if uploaded_file.name.endswith('.pdf'):
+                from pypdf import PdfReader
+                pdf_reader = PdfReader(io.BytesIO(uploaded_file.read()))
+                pdf_text = ""
+                for page in pdf_reader.pages:
+                    pdf_text += page.extract_text()
+                
+                doc = Document(
+                    page_content=pdf_text,
+                    metadata={"source": uploaded_file.name, "type": "pdf"}
+                )
+                all_documents.append(doc)
+            
+            # Handle text files
+            elif uploaded_file.name.endswith(('.txt', '.md')):
+                text_content = uploaded_file.read().decode('utf-8')
+                doc = Document(
+                    page_content=text_content,
+                    metadata={"source": uploaded_file.name, "type": "text"}
+                )
+                all_documents.append(doc)
+        
+        if all_documents:
+            # Split documents
+            split_docs = doc_processor.split_documents(all_documents)
+            
+            # Add to existing vector store
+            if vector_store.vectorstore is not None:
+                vector_store.vectorstore.add_documents(split_docs)
+            else:
+                vector_store.create_vectorstore(split_docs)
+            
+            # Rebuild the graph with updated retriever
+            graph_builder = GraphBuilder(
+                retriever=vector_store.get_retriever(),
+                llm=st.session_state.llm
+            )
+            graph_builder.build()
+            st.session_state.rag_system = graph_builder
+            
+            return len(split_docs)
+        
+        return 0
+    
+    except Exception as e:
+        st.error(f"Error processing files: {str(e)}")
+        return 0
 
 def main():
     """Main application"""
@@ -93,7 +168,30 @@ def main():
     
     st.markdown("---")
     
+    # Document Upload Section
+    st.markdown("### 📤 Upload Additional Documents")
+    st.markdown("Upload PDF or text files to add to your knowledge base")
+    
+    uploaded_files = st.file_uploader(
+        "Choose files to upload",
+        type=["pdf", "txt", "md"],
+        accept_multiple_files=True,
+        key="file_uploader"
+    )
+    
+    if uploaded_files:
+        if st.button("📥 Add Documents to Knowledge Base"):
+            with st.spinner("Processing uploaded documents..."):
+                num_chunks = add_documents_to_store(uploaded_files)
+                if num_chunks > 0:
+                    st.success(f"✅ Added {num_chunks} document chunks from {len(uploaded_files)} file(s)!")
+                else:
+                    st.warning("No documents were processed")
+    
+    st.markdown("---")
+    
     # Search interface
+    st.markdown("### 🔎 Search")
     with st.form("search_form"):
         question = st.text_input(
             "Enter your question:",
