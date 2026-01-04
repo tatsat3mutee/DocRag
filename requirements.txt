@@ -1,0 +1,16 @@
+langchain
+langchain-community
+langchain-groq
+langgraph
+faiss-cpu
+pydantic
+python-dotenv
+beautifulsoup4
+requests
+streamlit
+wikipedia
+langchain-huggingface
+ipykernel
+sentence-transformers
+pypdf
+uuid
